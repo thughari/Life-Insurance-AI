@@ -71,6 +71,9 @@ class ApplicantDataExtract(BaseModel):
     cover_amount: Optional[int] = Field(default=None, description="Desired cover amount or sum assured if mentioned.")
     term_years: Optional[int] = Field(default=None, description="Policy term in years if mentioned.")
     health_disclosures: list[str] = Field(default_factory=list, description="Any health conditions, smoking habits, or lifestyle factors mentioned.")
+    smoking_status: Optional[str] = Field(default=None, description="Smoking status if mentioned.")
+    occupation: Optional[str] = Field(default=None, description="Occupation if mentioned.")
+    annual_income: Optional[int] = Field(default=None, description="Annual income if mentioned.")
 
 def underwriting_agent(state: CopilotState) -> Dict:
     llm = get_llm()
@@ -95,6 +98,12 @@ def underwriting_agent(state: CopilotState) -> Dict:
             # avoid duplicates
             new_health = [d for d in extracted.health_disclosures if d not in existing_health]
             data["health_disclosures"] = existing_health + new_health
+        if extracted.smoking_status:
+            data["smoking_status"] = extracted.smoking_status
+        if extracted.occupation:
+            data["occupation"] = extracted.occupation
+        if extracted.annual_income:
+            data["annual_income"] = extracted.annual_income
     except Exception as e:
         print(f"Extraction failed: {e}")
         data = dict(state.applicant_data)
@@ -124,13 +133,19 @@ def underwriting_agent(state: CopilotState) -> Dict:
         risk_tier=risk_tier, estimate_amt=estimate['monthly_estimate'],
         query=state.user_query
     ))
+
+    response_text = resp_msg.content.strip()
+    response_text += "\n\nIndicative estimate only. Final premium subject to underwriting review."
+    if requires_human:
+        response_text += "\n\nThis case requires manual underwriting review before any eligibility decision can be made."
     
     return {
         "applicant_data": data,
         "risk_tier": risk_tier,
         "requires_human_review": requires_human,
-        "response": resp_msg.content,
+        "response": response_text,
         "node_outputs": {**state.node_outputs, "underwriting": {"estimate": estimate}},
+        "premium_estimate": estimate,
         "node_path": state.node_path + ["underwriting_agent"],
     }
 

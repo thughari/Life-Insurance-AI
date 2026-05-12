@@ -25,8 +25,10 @@ class CopilotState(BaseModel):
     intent: Optional[Intent] = None
     response: str = ""
     applicant_data: Dict[str, Any] = Field(default_factory=dict)
+    beneficiary_details: Dict[str, Any] = Field(default_factory=dict)
     risk_tier: RiskTier = "unknown"
     policy_type_preference: Optional[str] = None
+    premium_estimate: Optional[Dict[str, Any]] = None
     conversation_history: List[Dict[str, str]] = Field(default_factory=list)
     node_outputs: Dict[str, Any] = Field(default_factory=dict)
     requires_human_review: bool = False

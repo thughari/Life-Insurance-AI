@@ -7,16 +7,24 @@ class GuardResult:
     reason: str = ""
 
 
-BLOCK_PATTERNS = {
-    "final underwriting decision": "I can’t provide final underwriting decisions.",
-    "guaranteed premium": "I can only provide indicative premium estimates.",
-    "medical diagnosis": "I can’t provide medical advice or diagnosis.",
-}
+SECURITY_TEMPLATE = "I cannot assist with that request. Please consult a licensed insurance advisor or authorized representative."
+
+BLOCK_KEYWORDS = [
+    "am i approved",
+    "final underwriting decision",
+    "guaranteed premium",
+    "exact premium",
+    "medical diagnosis",
+    "ignore instructions",
+    "reveal system prompt",
+    "system prompt",
+    "internal data",
+]
 
 
 def apply_guardrails(text: str) -> GuardResult:
     lower = text.lower()
-    for pattern, reason in BLOCK_PATTERNS.items():
-        if pattern in lower:
-            return GuardResult(blocked=True, reason=reason)
+    for keyword in BLOCK_KEYWORDS:
+        if keyword in lower:
+            return GuardResult(blocked=True, reason=SECURITY_TEMPLATE)
     return GuardResult(blocked=False)
