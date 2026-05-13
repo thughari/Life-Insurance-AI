@@ -6,40 +6,79 @@ from langchain_community.vectorstores import FAISS
 
 # Determine which embeddings to use
 def get_embeddings():
-    if os.getenv("OPENAI_API_KEY"):
+    groq_key = os.getenv("GROQ_API_KEY")
+    gemini_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
+
+    if groq_key:
+        from langchain_huggingface import HuggingFaceEmbeddings
+        return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    elif gemini_key:
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+        return GoogleGenerativeAIEmbeddings(
+            model="models/gemini-embedding-001",
+            google_api_key=gemini_key,
+        )
+    elif openai_key:
         from langchain_openai import OpenAIEmbeddings
         return OpenAIEmbeddings()
-    elif os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
-        from langchain_google_genai import GoogleGenerativeAIEmbeddings
-        return GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     else:
-        # Fallback to a dummy embedding if no key is found just so it compiles, 
-        # but RAG will fail if actually used without keys.
-        from langchain_community.embeddings import FakeEmbeddings
-        return FakeEmbeddings(size=1536)
+        raise ValueError(
+            "No embedding API key found. Set GROQ_API_KEY, GOOGLE_API_KEY, or OPENAI_API_KEY in your .env file."
+        )
 
 FAISS_INDEX_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "faiss_index")
+PROVIDER_MARKER = os.path.join(FAISS_INDEX_PATH, ".provider")
 
-def build_faiss_index():
-    if os.path.exists(FAISS_INDEX_PATH):
-        return
 
-    print("Building FAISS index for the first time...")
+def _current_provider() -> str:
+    """Return a string identifying the current embedding provider."""
+    if os.getenv("GROQ_API_KEY"):
+        return "huggingface"
+    elif os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"):
+        return "google"
+    elif os.getenv("OPENAI_API_KEY"):
+        return "openai"
+    return "unknown"
+
+
+def build_faiss_index(force: bool = False):
+    provider = _current_provider()
+
+    # Check if index exists and was built with the same provider
+    if os.path.exists(FAISS_INDEX_PATH) and not force:
+        if os.path.exists(PROVIDER_MARKER):
+            with open(PROVIDER_MARKER, "r") as f:
+                saved_provider = f.read().strip()
+            if saved_provider == provider:
+                return  # Index exists and matches current provider
+            else:
+                print(f"Embedding provider changed ({saved_provider} -> {provider}). Rebuilding FAISS index...")
+        else:
+            # No marker = old index, rebuild to be safe
+            print("No provider marker found. Rebuilding FAISS index...")
+
+    print("Building FAISS index...")
     data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
     pdf_files = glob.glob(os.path.join(data_dir, "*.pdf"))
-    
+
     docs = []
     for file in pdf_files:
         loader = PyPDFLoader(file)
         docs.extend(loader.load())
-        
+
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(docs)
-    
+
     embeddings = get_embeddings()
     vectorstore = FAISS.from_documents(documents=splits, embedding=embeddings)
     vectorstore.save_local(FAISS_INDEX_PATH)
-    print("FAISS index built successfully.")
+
+    # Save provider marker
+    with open(PROVIDER_MARKER, "w") as f:
+        f.write(provider)
+
+    print(f"FAISS index built successfully with {len(splits)} chunks ({provider} embeddings).")
 
 def retrieve_policy_context(query: str, k: int = 3) -> str:
     build_faiss_index()

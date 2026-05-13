@@ -1,4 +1,5 @@
-from typing import Any, Dict, List, Literal, Optional
+import operator
+from typing import Any, Dict, List, Literal, Optional, Annotated
 
 from pydantic import BaseModel, Field
 
@@ -6,6 +7,8 @@ from pydantic import BaseModel, Field
 Intent = Literal["underwriting", "policy_qa", "beneficiary", "issuance", "lapse_revival"]
 RiskTier = Literal["standard", "substandard", "high", "declined", "unknown"]
 
+
+# --- API request/response schemas (Pydantic) ---
 
 class ChatRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
@@ -19,16 +22,23 @@ class ChatResponse(BaseModel):
     state: Dict[str, Any]
 
 
-class CopilotState(BaseModel):
+# --- LangGraph state (TypedDict with reducers) ---
+# Using Annotated with operator.add for list fields ensures that
+# each node APPENDS to the list rather than overwriting it.
+
+from typing import TypedDict
+
+
+class CopilotState(TypedDict, total=False):
     session_id: str
-    user_query: str = ""
-    intent: Optional[Intent] = None
-    response: str = ""
-    applicant_data: Dict[str, Any] = Field(default_factory=dict)
-    risk_tier: RiskTier = "unknown"
-    policy_type_preference: Optional[str] = None
-    conversation_history: List[Dict[str, str]] = Field(default_factory=list)
-    node_outputs: Dict[str, Any] = Field(default_factory=dict)
-    requires_human_review: bool = False
-    approved_by_human: Optional[bool] = None
-    node_path: List[str] = Field(default_factory=list)
+    user_query: str
+    intent: Optional[Intent]
+    response: str
+    applicant_data: Dict[str, Any]
+    risk_tier: RiskTier
+    policy_type_preference: Optional[str]
+    conversation_history: Annotated[List[Dict[str, str]], operator.add]
+    node_outputs: Dict[str, Any]
+    requires_human_review: bool
+    approved_by_human: Optional[bool]
+    node_path: Annotated[List[str], operator.add]
