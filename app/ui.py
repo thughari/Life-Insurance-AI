@@ -3,7 +3,7 @@ import streamlit as st
 import httpx
 import uuid
 
-API_URL = "http://localhost:8000"
+API_URL = "http://backend:8000"
 
 # Fallback for local development
 import os
