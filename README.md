@@ -1,3 +1,12 @@
+---
+title: Life Insurance AI Copilot
+emoji: 🏢
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # Life Insurance AI Copilot (Capstone Group 03)
 
 Production-grade **LangGraph stateful** life insurance copilot with:

@@ -7,8 +7,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Expose Streamlit's port
+EXPOSE 7860 
+
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-# Default command (overridden in docker-compose per service)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Make the script executable and run it
+# Default command for Hugging Face Spaces
+CMD ["bash", "start.sh"]
