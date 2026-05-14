@@ -1,219 +1,373 @@
 # Life Insurance AI Copilot – Complete Project Documentation
 
-## 1) What this document is
-This file explains:
-- Every file in the repository and why it exists.
-- Every function/class in the Python app and why it exists.
-- The end-to-end application flow.
-- The full feature list.
+## 1) Purpose of this document
+This document is a code-aligned reference for the current implementation. It covers:
+- every module and data file,
+- every class/function in the Python codebase,
+- end-to-end runtime flow,
+- API contracts,
+- guardrails and human-in-the-loop behavior.
+
+> Scope note: this file documents code present as of this revision. Generated runtime artifacts (for example FAISS index files) are documented as operational outputs.
 
 ---
 
-## 2) Repository-wide file inventory
+## 2) Repository inventory
 
-### Root-level files
-- `Dockerfile`  
-  Container build definition for packaging the backend/frontend runtime and dependencies.
-- `docker-compose.yml`  
-  Multi-service orchestration for running the app stack locally via Docker.
-- `requirements.txt`  
-  Python dependency lock/input for FastAPI, Streamlit, LangGraph/LangChain, FAISS, etc.
-- `README.md`  
-  Developer-facing quickstart, architecture overview, and test scenarios.
-- `problem-statement.txt`  
-  Assignment/capstone problem context and scope reference.
-- `PROJECT_FULL_DOCUMENTATION.md`  
-  (This file) complete technical + functional documentation.
+### Root
+- `README.md` – quickstart, architecture summary, endpoint overview.
+- `PROJECT_FULL_DOCUMENTATION.md` – this full technical documentation.
+- `problem-statement.txt` – capstone/project problem context.
+- `requirements.txt` – Python dependencies.
+- `Dockerfile` – container build definition.
+- `docker-compose.yml` – local multi-service orchestration.
+- `start.sh` – startup convenience script.
+- `.gitignore`, `.gitkeep` – repository housekeeping.
 
-### Application code (`app/`)
-- `app/main.py`  
-  FastAPI service entrypoint exposing chat, health, state, and human-approval endpoints.
-- `app/graph.py`  
-  LangGraph workflow definition, node logic, routing logic, and model/tool orchestration.
-- `app/models.py`  
-  Pydantic state/request/response schemas and shared domain typing.
-- `app/guards.py`  
-  Non-negotiable guardrail block checks before LLM execution.
-- `app/ui.py`  
-  Streamlit frontend: chat interface + state dashboard + human review actions.
+### Application (`app/`)
+- `app/main.py` – FastAPI app, REST endpoints, streaming endpoint, approval and state APIs.
+- `app/graph.py` – LangGraph workflow, routing nodes, specialist agents, human-review node, streaming helper.
+- `app/models.py` – request/response models and shared `CopilotState` typed state contract.
+- `app/guards.py` – guardrail pattern matching for prohibited asks, injection attempts, and sensitive-data patterns.
+- `app/ui.py` – Streamlit frontend with chat, streaming consumption, state dashboard, and approval actions.
 
-### Tool modules (`app/tools/`)
-- `app/tools/rag.py`  
-  PDF loading, chunking, embedding, FAISS index build/load, and retrieval context assembly.
-- `app/tools/csv_lookup.py`  
-  Risk classification and indicative premium estimation from CSV reference tables.
+### Tooling (`app/tools/`)
+- `app/tools/rag.py` – PDF ingestion, embedding selection, FAISS index build/load, context retrieval.
+- `app/tools/csv_lookup.py` – risk classification and indicative premium estimation from CSV references.
 
-### Data assets (`app/data/`)
-- `LifeInsurance_Glossary_VitaLife.pdf` – domain glossary source for RAG context.
-- `PolicyTerms_Conditions_VitaLife.pdf` – policy terms source for RAG.
-- `LifeInsurance_ProductGuide_VitaLife.pdf` – product coverage source for RAG.
-- `BeneficiaryNomination_Guidelines_VitaLife.pdf` – nomination rules source.
-- `PolicyIssuance_Checklist_VitaLife.pdf` – issuance process source.
-- `Underwriting_Guidelines_VitaLife.pdf` – underwriting source.
-- `Lapse_Revival_Reinstatement_VitaLife.pdf` – lapse/reinstatement source.
-- `Riders_AddOnBenefits_VitaLife.pdf` – rider/benefits source.
-- `RiskScore_Classification_Table.csv` – condition-to-risk mapping input for underwriting risk tiering.
-- `PremiumRate_ReferenceTable.csv` – reference premium table for indicative premium lookup.
-- `faiss_index/index.faiss`, `faiss_index/index.pkl` – persisted vector index artifacts for retrieval.
+### Data (`app/data/`)
+- Policy/underwriting source PDFs (RAG corpus).
+- `RiskScore_Classification_Table.csv` – condition/risk mapping table.
+- `PremiumRate_ReferenceTable.csv` – reference premium table.
+- `faiss_index/` – generated FAISS persistence (built at runtime).
+
+### Evaluation (`evaluation/`)
+- `evaluation/test_set.json` – evaluation dataset.
+- `evaluation/run_eval.py` – evaluator script calling backend and scoring outputs.
+- `evaluation/eval_results.json` – generated evaluation output.
 
 ---
 
-## 3) Function-by-function explanation
+## 3) Code-level documentation (every class/function)
 
 ## `app/main.py`
-- `health()`  
-  Lightweight liveness endpoint to confirm backend service availability.
-- `chat(req: ChatRequest)`  
-  Main orchestration endpoint:
-  1) applies guardrails, 2) checks paused human-review state, 3) invokes LangGraph, 4) appends conversation history, 5) returns structured response.
-- `approve(req: ApprovalRequest)`  
-  Human-in-the-loop continuation endpoint for paused underwriting sessions; stores approval decision and resumes graph execution.
-- `get_state(session_id: str)`  
-  Session state inspection endpoint used by UI sidebar for live status, trace, and pause state.
 
-Classes:
-- `ApprovalRequest(BaseModel)`  
-  Request schema for underwriter decision payload (`session_id`, `approved`).
+### Globals
+- `app = FastAPI(...)` – service instance.
+- `compiled_graph = build_graph()` – compiled LangGraph workflow with memory checkpointing.
+
+### Functions
+- `health()`
+  - **Route:** `GET /health`
+  - **Purpose:** liveness probe.
+  - **Return:** `{"status": "ok"}`.
+
+- `chat(req: ChatRequest)`
+  - **Route:** `POST /chat`
+  - **Purpose:** synchronous chat orchestration.
+  - **Flow:**
+    1. Apply `apply_guardrails` on incoming message.
+    2. If blocked, return `ChatResponse` with `node_path=["guardrail_block"]`.
+    3. Check graph state for pending `human_review` interrupt.
+    4. Invoke graph with `user_query` and `session_id` bound to LangGraph `thread_id`.
+    5. Add pause warning message if graph is now interrupted before `human_review`.
+    6. Append user/assistant turns using `compiled_graph.update_state` (reducer append semantics).
+    7. Return `ChatResponse` with full state payload.
+
+- `chat_stream(req: ChatRequest)`
+  - **Route:** `POST /chat/stream`
+  - **Purpose:** server-sent events (SSE) streaming interface.
+  - **Behavior:**
+    - Emits `blocked` event then `[DONE]` when guardrails block.
+    - Emits `paused` event then `[DONE]` when session awaits human review.
+    - Otherwise invokes graph first, then streams response text in token-like chunks (`chunk_size=8`) as `token` events plus initial `meta` event.
+    - Appends pause message if interrupted after invoke.
+    - Persists conversation history after stream completion.
+
+- `approve(req: ApprovalRequest)`
+  - **Route:** `POST /approve`
+  - **Purpose:** resume interrupted high-risk underwriting flow with human decision.
+  - **Validation:** rejects when no pending `human_review` interrupt exists.
+  - **Actions:** updates graph state with `approved_by_human`, injects synthetic completion query, resumes graph via `invoke(None, ...)`.
+
+- `get_state(session_id: str)`
+  - **Route:** `GET /state/{session_id}`
+  - **Purpose:** inspect current thread state for UI/debugging.
+  - **Return:** state dict plus computed `is_paused` boolean.
+
+### Classes
+- `ApprovalRequest(BaseModel)`
+  - Fields: `session_id: str`, `approved: bool`.
+
+---
 
 ## `app/graph.py`
-- `get_llm()`  
-  Provider selector that chooses OpenAI or Gemini model based on environment keys (with fallback).
-- `format_history(history: list) -> str`  
-  Compacts recent conversation messages into prompt-ready text.
-- `intent_router(state: CopilotState) -> Dict`  
-  Classifies latest user request into domain intent and records route path.
-- `underwriting_agent(state: CopilotState) -> Dict`  
-  Extracts applicant attributes, merges persistent state, classifies risk tier, computes indicative premium, flags human review requirements, and drafts underwriting-safe response.
-- `policy_qa_agent(state: CopilotState) -> Dict`  
-  Retrieves policy-document context and answers policy questions with citation-oriented prompting.
-- `beneficiary_agent(state: CopilotState) -> Dict`  
-  Specialized beneficiary nomination Q&A using targeted retrieval context.
-- `issuance_agent(state: CopilotState) -> Dict`  
-  Specialized policy issuance and pending-document Q&A using targeted retrieval context.
-- `human_review(state: CopilotState) -> Dict`  
-  Adds an explicit pause/review message in state when risk is elevated.
-- `route_from_intent(state: CopilotState) -> str`  
-  Conditional edge router from intent node to the relevant specialist node.
-- `route_from_underwriting(state: CopilotState) -> str`  
-  Conditional edge router from underwriting to either end or human review.
-- `build_graph()`  
-  Registers nodes/edges, enables state checkpointing, and compiles interrupt behavior (`interrupt_before=["human_review"]`).
 
-Classes:
-- `IntentClassification(BaseModel)`  
-  Structured output schema for intent classification.
-- `ApplicantDataExtract(BaseModel)`  
-  Structured extraction schema for age/cover/term/health disclosures.
+### LLM/provider helper
+- `get_llm()`
+  - Chooses provider in this order:
+    1. Groq (`GROQ_API_KEY`) → `ChatGroq(model="llama-3.3-70b-versatile")`
+    2. Google (`GOOGLE_API_KEY`/`GEMINI_API_KEY`) → `ChatGoogleGenerativeAI(model="gemini-2.5-flash")`
+    3. OpenAI (`OPENAI_API_KEY`) → `ChatOpenAI(model="gpt-4o-mini")`
+  - Raises if no key found.
+
+### Structured schemas
+- `IntentClassification(BaseModel)`
+  - `intent`: one of `underwriting | policy_qa | beneficiary | issuance | lapse_revival`.
+
+- `ApplicantDataExtract(BaseModel)`
+  - Extracted underwriting fields:
+    - `age: Optional[int]`
+    - `cover_amount: Optional[int]`
+    - `term_years: Optional[int]`
+    - `health_disclosures: list[str]`
+
+### Helpers
+- `format_history(history: list) -> str`
+  - Converts last 4 messages into prompt text; fallback when empty.
+
+### Graph node functions
+- `intent_router(state: CopilotState) -> Dict`
+  - Intent classification using structured LLM output.
+  - Fallback keyword router when LLM classification errors.
+  - Appends `"intent_router"` to `node_path`.
+
+- `underwriting_agent(state: CopilotState) -> Dict`
+  - Extracts applicant data from current message.
+  - Merges extracted fields with persisted `applicant_data`.
+  - Computes `risk_tier = classify_risk(disclosures)`.
+  - Computes `estimate = indicative_premium_lookup(...)`.
+  - Flags `requires_human_review` for `high/substandard/declined`.
+  - Generates safe natural-language response (no final decision).
+  - Stores underwriting estimate under `node_outputs["underwriting"]`.
+
+- `policy_qa_agent(state: CopilotState) -> Dict`
+  - Builds search query (augments short follow-ups with prior assistant turn).
+  - Retrieves context from RAG store.
+  - Produces cited policy answer.
+
+- `beneficiary_agent(state: CopilotState) -> Dict`
+  - Retrieves beneficiary-focused context and answers nomination questions.
+
+- `issuance_agent(state: CopilotState) -> Dict`
+  - Retrieves issuance-focused context and answers on documents/timelines.
+
+- `lapse_revival_agent(state: CopilotState) -> Dict`
+  - Dedicated specialist for missed premium/lapse/revival/reinstatement guidance.
+
+- `human_review(state: CopilotState) -> Dict`
+  - Appends explicit pause/system warning content.
+
+### Streaming helper
+- `stream_agent_response(state: CopilotState, agent_name: str) -> AsyncIterator[str]`
+  - Builds an agent-specific prompt and streams `AIMessageChunk` content.
+  - Supports specialized prompts for each agent and generic fallback.
+  - Returns async text chunks.
+
+### Routing and graph assembly
+- `route_from_intent(state: CopilotState) -> str`
+  - Maps `state.intent` to node name (`underwriting_agent`, `policy_qa_agent`, `beneficiary_agent`, `issuance_agent`, `lapse_revival_agent`).
+
+- `route_from_underwriting(state: CopilotState) -> str`
+  - Sends to `human_review` if `requires_human_review=True`, else `END`.
+
+- `build_graph()`
+  - Builds `StateGraph(CopilotState)`.
+  - Registers all nodes and conditional edges.
+  - Adds `MemorySaver` checkpointer.
+  - Compiles graph with `interrupt_before=["human_review"]`.
+
+---
 
 ## `app/models.py`
-- `ChatRequest(BaseModel)`  
-  Input schema for `/chat` (session + message).
-- `ChatResponse(BaseModel)`  
-  Output schema for `/chat` (session + node trace + response + state snapshot).
-- `CopilotState(BaseModel)`  
-  Canonical cross-turn state model persisted in graph checkpointer.
 
-Aliases:
-- `Intent`  
-  Restricted set of valid intents.
-- `RiskTier`  
-  Restricted set of valid risk tiers.
+### Type aliases
+- `Intent` – literal union of supported intents.
+- `RiskTier` – literal union `standard | substandard | high | declined | unknown`.
+
+### API models
+- `ChatRequest(BaseModel)`
+  - `session_id: str` (non-empty)
+  - `message: str` (non-empty)
+
+- `ChatResponse(BaseModel)`
+  - `session_id: str`
+  - `node_path: List[str]`
+  - `response: str`
+  - `state: Dict[str, Any]`
+
+### Shared LangGraph state
+- `CopilotState(TypedDict, total=False)`
+  - Core fields: `session_id`, `user_query`, `intent`, `response`, `applicant_data`, `risk_tier`, `policy_type_preference`, `node_outputs`, `requires_human_review`, `approved_by_human`.
+  - Append-reducer fields:
+    - `conversation_history: Annotated[List[Dict[str, str]], operator.add]`
+    - `node_path: Annotated[List[str], operator.add]`
+
+---
 
 ## `app/guards.py`
-- `apply_guardrails(text: str) -> GuardResult`  
-  Pattern blocker for prohibited asks (final decision, guaranteed premium, diagnosis), returning allow/block verdict.
 
-Classes/constants:
-- `GuardResult`  
-  Structured guard outcome.
-- `BLOCK_PATTERNS`  
-  Phrase-to-reason mapping used for safety enforcement.
+### Structures/constants
+- `GuardResult` dataclass
+  - `blocked: bool`, `reason: str`.
+
+- `BLOCK_PATTERNS`
+  - Direct phrase-based refusals for:
+    - final underwriting decision requests,
+    - guaranteed premium requests,
+    - medical diagnosis/prescription requests.
+
+- `INJECTION_PATTERNS`
+  - Regex list for common jailbreak/prompt-injection attempts.
+
+- `PHI_PATTERNS`
+  - Regex list for sensitive information patterns (e.g., SSN/credit-card-style patterns and related terms).
+
+### Function
+- `apply_guardrails(text: str) -> GuardResult`
+  - Executes in order:
+    1. direct block phrases,
+    2. injection regex detection,
+    3. PHI/PII leakage detection,
+    4. allow by default.
+
+---
 
 ## `app/ui.py`
-- `fetch_state()`  
-  Helper that calls backend `/state/{session_id}` and returns current state for sidebar rendering.
 
-Top-level UI flow exists as script logic (Streamlit pattern):
-- initializes session/message state,
-- renders sidebar diagnostics,
-- renders approve/reject buttons when paused,
-- renders chat transcript,
-- sends new prompt to `/chat`,
-- appends assistant result and reruns.
+### Globals/session setup
+- Resolves `API_URL` default (`http://backend:8000`) with environment override.
+- Initializes Streamlit page config and per-session `session_id` + `messages` state.
+
+### Functions
+- `fetch_state()`
+  - Calls backend `GET /state/{session_id}`.
+  - Returns state dict or `{}` on failure.
+
+- `stream_chat(message: str)`
+  - Primary path: POST `/chat/stream`, parse SSE lines.
+  - Handles event types: `meta`, `token`, `blocked`, `paused`, `[DONE]`.
+  - Fallback path: POST `/chat` when streaming fails.
+
+### UI workflow (top-level Streamlit script)
+- Renders title/caption.
+- Sidebar shows applicant data, risk tier, node path trace, pause status.
+- Shows Approve/Reject actions when paused; calls `POST /approve`.
+- Supports reset button to rotate `session_id` and clear transcript.
+- Main chat pane displays history, sends new prompts, streams assistant response, stores messages, reruns.
+
+---
 
 ## `app/tools/rag.py`
-- `get_embeddings()`  
-  Embedding provider selector (OpenAI/Gemini/fallback fake embedding).
-- `build_faiss_index()`  
-  One-time PDF ingestion + splitting + vector index creation/persistence.
-- `retrieve_policy_context(query: str, k: int = 3) -> str`  
-  Similarity search and context formatter with source/page markers for downstream citation.
 
-Constants:
-- `FAISS_INDEX_PATH`  
-  Filesystem location for persisted vector index.
+### Functions
+- `get_embeddings()`
+  - Embedding selection order:
+    1. Groq key present → HuggingFace `all-MiniLM-L6-v2` embeddings,
+    2. Google key present → Gemini embeddings (`models/gemini-embedding-001`),
+    3. OpenAI key present → `OpenAIEmbeddings`.
+  - Raises if no supported key present.
+
+- `_current_provider() -> str`
+  - Returns provider marker string (`huggingface`, `google`, `openai`, or `unknown`).
+
+- `build_faiss_index(force: bool = False)`
+  - Reuses existing index when provider marker matches.
+  - Rebuilds when forced or provider changed / marker missing.
+  - Loads all PDFs in `app/data`, splits into chunks (`1000/200`), builds FAISS, saves locally.
+  - Writes provider marker file.
+
+- `retrieve_policy_context(query: str, k: int = 3) -> str`
+  - Ensures index exists.
+  - Loads FAISS and runs similarity search.
+  - Returns concatenated context blocks with `[Source, Page]` headers.
+
+### Constants
+- `FAISS_INDEX_PATH` – local vectorstore path.
+- `PROVIDER_MARKER` – file storing embedding provider used for current index.
+
+---
 
 ## `app/tools/csv_lookup.py`
-- `classify_risk(disclosures: List[str]) -> str`  
-  Maps health/lifestyle disclosures to a normalized risk tier using CSV + fallback keyword rules.
-- `indicative_premium_lookup(age, cover_amount, term_years, risk_tier) -> Dict[str, str]`  
-  Finds closest premium-table match and returns indicative monthly premium + disclaimer, with formula fallback.
 
-Constants:
-- `DATA_DIR`, `RISK_CSV_PATH`, `PREMIUM_CSV_PATH`  
-  Paths to underwriting reference datasets.
+### Constants
+- `DATA_DIR`, `RISK_CSV_PATH`, `PREMIUM_CSV_PATH` – filesystem paths for lookup tables.
 
----
+### Functions
+- `classify_risk(disclosures: List[str]) -> str`
+  - Defaults to `standard` when no disclosures.
+  - Loads risk CSV and scans disclosure text against `specific_condition`.
+  - Applies explicit smoker heuristic and tier mapping rules.
+  - Returns highest-severity mapped tier among matches.
 
-## 4) End-to-end app flow
-
-1. **User types in Streamlit chat** (`app/ui.py`).
-2. UI sends request to `POST /chat` on FastAPI (`app/main.py`).
-3. Backend runs `apply_guardrails`; if blocked, returns immediate safe refusal.
-4. Backend checks graph checkpoint state for pending human review pause.
-5. If not paused, backend invokes compiled LangGraph with current query + session thread id.
-6. Graph starts at `intent_router`.
-7. Router sends query to one specialist path:
-   - `underwriting_agent`
-   - `policy_qa_agent`
-   - `beneficiary_agent`
-   - `issuance_agent`
-   - (`lapse_revival` currently mapped to `policy_qa_agent`)
-8. **Underwriting path** additionally:
-   - extracts applicant entities,
-   - updates stateful applicant profile,
-   - computes risk + premium estimate from CSV tools,
-   - if risk is high/substandard/declined, triggers human-review interrupt.
-9. Graph returns response + updated state.
-10. Backend appends user/assistant turns to `conversation_history` and persists to graph state.
-11. UI renders assistant output + updated sidebar state.
-12. If paused, UI shows **Approve/Reject** buttons, calling `POST /approve` to resume execution.
+- `indicative_premium_lookup(age: int, cover_amount: int, term_years: int, risk_tier: str) -> Dict[str, str]`
+  - Loads premium CSV.
+  - Selects nearest available age/term/cover values.
+  - Filters rows with default gender (`Male`) then picks price strategy by `risk_tier`.
+  - Returns structured monthly estimate + disclaimer.
+  - Uses formula fallback when table match is unavailable.
 
 ---
 
-## 5) Complete feature list
+## `evaluation/run_eval.py`
 
-- **Stateful multi-turn sessions** keyed by `session_id`.
-- **Intent routing** across specialized insurance subdomains.
-- **Underwriting intake extraction** (age, cover, term, disclosures).
-- **CSV-backed risk stratification**.
-- **CSV-backed indicative premium lookup** with numeric fallback.
-- **RAG policy Q&A** across multiple policy PDFs.
-- **Source/page provenance formatting** in retrieval context.
-- **Human-in-the-loop interruption** for elevated-risk underwriting.
-- **Manual approval/rejection resume flow** via API and UI.
-- **Safety guardrails** against prohibited outputs.
-- **Execution trace visibility** via `node_path` and sidebar state.
-- **Health and state introspection endpoints** for operability/debugging.
-- **Dockerized deployment path** with compose orchestration.
+### Functions
+- `load_test_set()` – loads evaluation dataset JSON.
+- `query_copilot(question: str, session_id: str = "eval-session") -> dict` – calls backend `/chat` for one prompt.
+- `run_evaluation()` – iterates dataset, computes aggregate metrics, writes `evaluation/eval_results.json`.
 
 ---
 
-## 6) Why this architecture exists
+## 4) API reference
 
-- **LangGraph state model** enables deterministic orchestration and persistent conversation/application state.
-- **Specialist node split** keeps prompts and responsibilities scoped, improving maintainability.
-- **Tool separation (`rag.py`, `csv_lookup.py`)** cleanly isolates data retrieval/calculation logic from orchestration.
-- **FastAPI + Streamlit split** allows simple service boundary: API first, UI as replaceable client.
-- **HitL pause pattern** enforces compliance-like gating where automation should not finalize high-risk outcomes.
-- **Guardrails before graph invoke** reduce unsafe output risk and wasted model/tool calls.
+- `GET /health`
+  - Liveness endpoint.
+
+- `POST /chat`
+  - Body: `{"session_id": "...", "message": "..."}`
+  - Returns `ChatResponse` model.
+
+- `POST /chat/stream`
+  - Body: same as `/chat`.
+  - SSE events:
+    - `meta` (node_path, pause state)
+    - `token` (streamed text chunks)
+    - `blocked` or `paused` terminal early messages
+    - `[DONE]`
+
+- `POST /approve`
+  - Body: `{"session_id": "...", "approved": true|false}`
+  - Resumes interrupted review flow.
+
+- `GET /state/{session_id}`
+  - Returns full persisted state with computed `is_paused` flag.
+
+---
+
+## 5) End-to-end execution flow
+
+1. User enters prompt in Streamlit chat.
+2. UI sends prompt to `/chat/stream` (fallback `/chat`).
+3. Backend guardrails run first.
+4. Backend checks if graph is currently paused at `human_review`.
+5. Graph invocation begins with `intent_router`.
+6. Query routes to specialist node.
+7. Specialist node may call tools (RAG/CSV) and generate response.
+8. Underwriting path may set `requires_human_review` and interrupt before `human_review`.
+9. Backend/UI exposes pause state; underwriter can approve/reject via `/approve`.
+10. Conversation history and node path accumulate in persisted thread state.
+
+---
+
+## 6) Functional capabilities checklist
+
+- Intent classification and conditional routing.
+- Multi-turn state persistence by `session_id`.
+- Underwriting data extraction and state merge.
+- CSV-based risk tiering.
+- CSV-based indicative premium lookup with fallback formula.
+- RAG retrieval across insurance PDFs with source/page markers.
+- Specialist answering paths for policy, beneficiary, issuance, and lapse/revival.
+- Human-in-the-loop pause/approve/reject workflow.
+- Safety guardrails for prohibited content, injection, and sensitive data leakage.
+- REST + SSE interfaces and Streamlit operator dashboard.
