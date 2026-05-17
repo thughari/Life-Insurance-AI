@@ -16,6 +16,7 @@ compiled_graph = build_graph()
 
 import os
 import pymongo
+import certifi
 
 SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "data", "sessions.json")
 mongodb_uri = os.getenv("MONGODB_URI")
@@ -23,7 +24,7 @@ mongodb_uri = os.getenv("MONGODB_URI")
 mongo_client = None
 mongo_collection = None
 if mongodb_uri:
-    mongo_client = pymongo.MongoClient(mongodb_uri)
+    mongo_client = pymongo.MongoClient(mongodb_uri, tlsCAFile=certifi.where())
     mongo_collection = mongo_client["copilot_db"]["active_sessions"]
 
 def load_sessions():

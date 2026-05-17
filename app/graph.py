@@ -509,8 +509,9 @@ def build_graph():
     
     if mongodb_uri:
         import pymongo
+        import certifi
         from langgraph.checkpoint.mongodb import MongoDBSaver
-        client = pymongo.MongoClient(mongodb_uri)
+        client = pymongo.MongoClient(mongodb_uri, tlsCAFile=certifi.where())
         memory = MongoDBSaver(client)
     else:
         from langgraph.checkpoint.memory import MemorySaver
