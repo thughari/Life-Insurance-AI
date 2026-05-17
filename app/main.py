@@ -181,7 +181,8 @@ async def chat_stream(req: ChatRequest):
                         response_text += chunk.content
                         yield f"data: {json.dumps({'type': 'token', 'content': chunk.content})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'token', 'content': f'\\n\\nError generating response: {str(e)}'})}\n\n"
+            error_msg = f"\n\nError generating response: {str(e)}"
+            yield f"data: {json.dumps({'type': 'token', 'content': error_msg})}\n\n"
 
         # After execution completes (or pauses), check the final state
         state_snapshot = await compiled_graph.aget_state(config)
