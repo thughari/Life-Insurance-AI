@@ -276,41 +276,55 @@ async def list_sessions():
     """List all active sessions with their last activity."""
     sessions = []
     
-    # Reload from DB if using mongo to sync across Cloud Run instances
-    if mongo_collection is not None:
-        current_sessions = load_sessions()
-        global _active_sessions
-        _active_sessions = current_sessions
-    else:
-        current_sessions = _active_sessions
+    try:
+        if mongo_collection is not None:
+            current_sessions = load_sessions()
+            global _active_sessions
+            _active_sessions = current_sessions
+        else:
+            current_sessions = _active_sessions
+            
+        import asyncio
+
+        async def fetch_session_info(sid, info):
+            try:
+                snapshot = await compiled_graph.aget_state({"configurable": {"thread_id": sid}})
+                is_paused = bool(snapshot and snapshot.next and "human_review" in snapshot.next)
+                node_path = []
+                intent = "unknown"
+                if snapshot and snapshot.values:
+                    vals = dict(snapshot.values) if not hasattr(snapshot.values, "model_dump") else snapshot.values.model_dump()
+                    node_path = vals.get("node_path", [])
+                    intent = vals.get("intent", "unknown")
+                
+                # Robust parsing for legacy sessions
+                last_active = info.get("last_active", "N/A") if isinstance(info, dict) else str(info)
+                last_query = info.get("last_query", "N/A") if isinstance(info, dict) else "N/A"
+                
+                return {
+                    "session_id": sid,
+                    "last_active": last_active,
+                    "last_query": last_query,
+                    "is_paused": is_paused,
+                    "intent": intent,
+                    "node_path": node_path,
+                }
+            except Exception as e:
+                print(f"Error fetching state for {sid}: {e}")
+                return None
+
+        tasks = [fetch_session_info(sid, info) for sid, info in current_sessions.items()]
+        results = await asyncio.gather(*tasks)
+        sessions = [s for s in results if s is not None]
         
-    import asyncio
-
-    async def fetch_session_info(sid, info):
-        snapshot = await compiled_graph.aget_state({"configurable": {"thread_id": sid}})
-        is_paused = bool(snapshot and snapshot.next and "human_review" in snapshot.next)
-        node_path = []
-        intent = "unknown"
-        if snapshot and snapshot.values:
-            vals = dict(snapshot.values) if not hasattr(snapshot.values, "model_dump") else snapshot.values.model_dump()
-            node_path = vals.get("node_path", [])
-            intent = vals.get("intent", "unknown")
-        return {
-            "session_id": sid,
-            "last_active": info["last_active"],
-            "last_query": info["last_query"],
-            "is_paused": is_paused,
-            "intent": intent,
-            "node_path": node_path,
-        }
-
-    tasks = [fetch_session_info(sid, info) for sid, info in current_sessions.items()]
-    sessions = await asyncio.gather(*tasks)
-    
-    # Sort by last_active descending so newest is at the top
-    sessions.sort(key=lambda x: x["last_active"], reverse=True)
-    
-    return {"count": len(sessions), "sessions": sessions}
+        # Sort by last_active descending so newest is at the top
+        sessions.sort(key=lambda x: x["last_active"], reverse=True)
+        
+        return {"count": len(sessions), "sessions": sessions}
+    except Exception as e:
+        print(f"Critical error in /sessions: {e}")
+        # Return empty list gracefully instead of crashing the UI
+        return {"count": 0, "sessions": []}
 
 
 @app.delete("/sessions/{session_id}")
