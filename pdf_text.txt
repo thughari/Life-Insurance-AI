@@ -1,0 +1,545 @@
+GROUP 03 · CAPSTONE PROJECT
+ Life Insurance
+ AI Copilot
+ Underwriting · Risk Scoring · Beneficiary Q&A · Policy Issuance Guidance
+Domain
+Life Insurance
+AI Pattern
+LangGraph Stateful Workflow with Conditional Branching
+Stack Hint
+LangGraph · LangChain · FastAPI · FAISS · Streamlit · Docker · AWS
+Duration
+Day 19 & 20 — Full Capstone
+Team Size
+4–5 Participants
+Type
+Problem Statement | Architecture Reference | Evaluation Rubric
+ Enterprise AI Training Program · 15-Day Bootcamp Series
+
+CAPSTONE PROJECT 03  |  PROBLEM STATEMENT
+Life Insurance AI Copilot
+Page 2  |  Enterprise AI Training Program  |  Day 19 & 20  |  Confidential – For Participant Use Only
+1. Project Overview
+Group 03 is tasked with building a production-grade Life Insurance AI Copilot — an intelligent assistant that handles
+the full lifecycle of a life insurance interaction: from initial applicant risk intake and underwriting Q&A;, through policy
+type selection guidance, beneficiary nomination support, and policy issuance status tracking.
+The key technical differentiator for this project is the use of a LangGraph stateful workflow — a directed graph
+where an intent router node conditionally branches incoming queries to one of four specialist agent nodes
+(Underwriting, Policy Q&A, Beneficiary, Issuance), each with access to the shared application state and the RAG
+knowledge base. High-risk underwriting applications additionally trigger a Human-in-the-Loop review node before
+proceeding.
+Domain
+Life Insurance
+AI Pattern
+LangGraph Stateful Workflow — Conditional Branching + Shared State + HitL
+User Personas
+Insurance Applicants · Underwriters · Policy Advisors · Beneficiaries
+Core Challenge
+Multi-node graph with conditional routing, state persistence, and a human approval interrupt
+for high-risk cases
+Final Deliverable
+Live URL (AWS) + Streamlit UI + FastAPI + LangGraph + FAISS + Evaluation Scorecard
+Duration
+Day 19 & 20 (Full capstone + deployment demo)
+Team Size
+4–5 participants
+2. Problem Statement
+Life insurance is one of the most complex insurance products to explain, sell, and administer. Applicants are often
+confused about which policy type suits their needs (term vs whole vs ULIP), what health disclosures are required
+during underwriting, how risk scoring affects their premium, and how to correctly nominate a beneficiary. Advisors and
+underwriters spend hours handling queries that could be resolved instantly with the right information surfaced at the
+right time.
+Unlike other insurance domains, life insurance queries are not isolated — they follow a sequential, stateful journey. An
+applicant who starts by asking about term vs whole life will next ask about premium calculation, then health disclosure
+requirements, then beneficiary nomination, then issuance timelines. A stateless chatbot fails this user at every step. A
+stateful, graph-based agent that remembers context across nodes is the right architecture for this domain.
+■ Your Mission
+Build a LangGraph-powered AI copilot that routes each user query to the correct specialist node based on intent,
+maintains shared application state across all interactions in a session, retrieves accurate information from policy
+documents, and — for high-risk applicants — pauses the workflow and routes to a human underwriter for review
+before issuing a recommendation.
+The system must demonstrate conditional graph branching, state persistence across nodes, RAG retrieval from life
+insurance documents, and an observable multi-node trace in LangSmith.
+2.1 Key Pain Points Your System Must Address
+  Policy Type Confusion: Applicants cannot easily distinguish between Term Life, Whole Life, Endowment, and
+ ULIP products and which suits their financial goals.
+
+CAPSTONE PROJECT 03  |  PROBLEM STATEMENT
+Life Insurance AI Copilot
+Page 3  |  Enterprise AI Training Program  |  Day 19 & 20  |  Confidential – For Participant Use Only
+  Underwriting Opacity: Applicants don't know what health conditions, lifestyle factors, or financial disclosures will
+ affect their risk score and premium.
+  Premium Estimation Gap: Advisors manually look up actuarial tables to estimate premiums — a slow, error-prone
+ process.
+  Beneficiary Nomination Errors: Policyholders make errors in beneficiary nomination (incorrect share allocation,
+ missing nominees) that cause claim disputes.
+  Policy Issuance Delays: Applicants don't know what documents are pending, what the issuance timeline is, or
+ why their application is under review.
+  High-Risk Application Handling: Borderline or high-risk applications require human underwriter review — the
+ system must know when to escalate rather than auto-respond.
+  Lapse & Revival Queries: Policyholders who have missed premiums need guidance on revival conditions, grace
+ periods, and reinstatement requirements.
+■■ Non-Negotiable Safety Constraint
+The copilot must NEVER provide a final underwriting decision, medical advice, or guaranteed premium quote. All
+premium estimates must be labelled as indicative. High-risk cases MUST be routed to the Human-in-the-Loop
+review node — auto-approving them without human review is a critical system failure. Every policy-grounded
+answer must cite the source document and page.
+3. Provided Dataset & Knowledge Base
+The following synthetic documents and structured datasets are provided as your knowledge base. All data is fictional
+and created for training purposes only.
+ #
+ Document / Dataset
+ Form
+ at
+ Size
+ Primary Use Case
+1
+Life Insurance Product Guide (Term /
+Whole Life / Endowment / ULIP)
+PDF
+28 pp
+Policy type comparison, feature Q&A;, suitability
+guidance
+2
+Full Policy Terms & Conditions (Master
+policy document)
+PDF
+90 pp
+Detailed coverage terms, exclusions, conditions,
+definitions
+3
+Underwriting Guidelines Manual
+PDF
+45 pp
+Risk classification criteria, health disclosure
+requirements, occupational hazards
+4
+Premium Rate Reference Tables (Age ×
+Sum Assured × Policy Term)
+CSV
+800
+rows
+Indicative premium lookup by age, cover amount, and
+term length
+5
+Risk Score Classification Table (Medical
+conditions × risk category)
+CSV
+220
+rows
+Mapping of disclosed conditions to underwriting risk
+tiers (standard/substandard/declined)
+6
+Beneficiary Nomination Guidelines
+PDF
+10 pp
+Nomination rules, share allocation, minor nominee
+requirements, trustee appointment
+7
+Policy Issuance Checklist & Timelines
+PDF
+8 pp
+Required documents, issuance stages, typical
+turnaround times
+8
+Lapse, Revival & Reinstatement Guide
+PDF
+12 pp
+Grace period terms, revival conditions, reinstatement
+documentation
+9
+Riders & Add-On Benefits Catalogue
+PDF
+18 pp
+Critical illness rider, accidental death benefit, waiver of
+premium details
+1
+0
+Life Insurance Glossary
+PDF
+14 pp
+Definitions: sum assured, maturity, surrender value,
+bonus, mortality charge, etc.
+
+CAPSTONE PROJECT 03  |  PROBLEM STATEMENT
+Life Insurance AI Copilot
+Page 4  |  Enterprise AI Training Program  |  Day 19 & 20  |  Confidential – For Participant Use Only
+■ Ingestion & State Design Hint
+The two CSV datasets (premium rates and risk scores) are structured lookups — think carefully about whether to
+index them in FAISS or handle them as direct lookup tools in your graph nodes. The shared LangGraph state
+should carry applicant data collected across nodes (age, health disclosures, desired cover, policy type preference)
+so each specialist node can access what prior nodes captured.
+4. Expected System Architecture & Data Flow
+This project introduces a LangGraph stateful workflow as the core orchestration layer — replacing a simple
+LangChain agent with a directed graph of specialist nodes connected by conditional edges. Study both diagrams
+carefully: the high-level 5-layer architecture (Figure 1) and the detailed LangGraph workflow (Figure 2).
+User / UI
+Streamlit Chat
+API Layer
+FastAPI Service
+LangGraph
+Stateful Workflow
+Knowledge Base
+FAISS / Docs
+Cloud Infra
+AWS Deploy
+Response path (dashed)
+1.
+1. Query
+input
+2.
+2. HTTP
+POST /chat
+3.
+3. Graph
+execute
+4.
+4. RAG
+retrieve
+5.
+5. Respond
+& persist
+System Architecture & Data Flow (5 Layers)
+Note: The Agent/LLM layer is replaced by the LangGraph stateful workflow for this project
+ Figure 1: Five-layer system architecture — note LangGraph replaces the single-agent layer
+START
+Intent Router
+Classifies query type
+Route
+Intent
+underwriting
+Underwriting■Agent
+Risk intake■& scoring
+policy Q&A
+Policy Q&A■Agent
+RAG over■policy docs
+beneficiary
+Beneficiary■Agent
+Nomination■& queries
+issuance
+ Issuance■Agent
+Policy issue■guidance
+high risk?
+Human Review
+Underwriter■approval (HitL)
+approved
+LangGraph Shared State
+applicant_data · risk_score · policy_type · conversation_history
+END
+LEGEND
+LLM Agent Node
+Conditional Router
+Human-in-the-Loop
+Approval Edge
+Shared State Store
+Expected LangGraph Stateful Workflow
+Intent router conditionally branches to specialist agent nodes; shared state persists across all nodes; underwriting triggers HitL review
+
+CAPSTONE PROJECT 03  |  PROBLEM STATEMENT
+Life Insurance AI Copilot
+Page 5  |  Enterprise AI Training Program  |  Day 19 & 20  |  Confidential – For Participant Use Only
+ Figure 2: LangGraph stateful workflow — intent router branches to specialist nodes; high-risk underwriting triggers
+ Human-in-the-Loop review before state is committed
+4.1 Node Responsibilities
+ Node
+ Type
+ Responsibility
+Intent Router
+Conditional
+Router
+Classifies incoming query intent (underwriting / policy Q&A; / beneficiary /
+issuance / lapse-revival) and routes to the appropriate specialist node via
+conditional edges.
+Underwriting
+Agent
+LLM Agent Node
+Collects health and lifestyle disclosures, looks up risk score classification table,
+determines risk tier, estimates indicative premium from rate table, and flags
+high-risk cases for human review.
+Policy Q&A;
+Agent
+LLM Agent Node
+Performs RAG retrieval over policy documents and product guides to answer
+coverage, exclusion, rider, and product comparison questions. All responses
+must include citations.
+Beneficiary Agent
+LLM Agent Node
+Guides policyholders through nomination requirements, validates share
+allocation, flags minor nominee requirements, and retrieves relevant policy
+clauses.
+Issuance Agent
+LLM Agent Node
+Answers questions about pending documents, issuance stages, timeline, and
+conditions for policy dispatch. References the issuance checklist.
+Human Review
+Node
+HitL Interrupt
+Triggered only when Underwriting Agent flags a high-risk case. Pauses the graph,
+surfaces the applicant risk summary to a human underwriter, and waits for an
+approval/rejection decision before the graph continues.
+Shared State
+Store
+State Persistence
+Persists applicant_data, risk_score, policy_type_preference,
+conversation_history, and node_outputs across all graph nodes within a session
+using LangGraph's MemorySaver checkpointer.
+4.2 Required Data Flow (5 Steps)
+  Step 1 — Query Input: User enters a query in the Streamlit UI. Session state carries prior context (applicant data
+ collected in previous turns).
+  Step 2 — HTTP POST /chat: FastAPI receives query + session_id, validates, and passes to the LangGraph
+ workflow executor.
+  Step 3 — Graph Execute: The Intent Router node classifies the query and conditionally edges to the correct
+ specialist node. The node executes with access to shared state.
+  Step 4 — RAG Retrieve / Structured Lookup: The active node retrieves relevant chunks from FAISS (for
+ document queries) or looks up the CSV tables (for premium/risk score queries). State is updated with new
+applicant data collected.
+  Step 5 — Respond & Persist: The LLM synthesizes a cited response, guardrails check the output, and the
+ updated state is persisted via checkpointer. Response returned to user.
+5. Functional Requirements
+Your system must fulfil the following capabilities. Implementation decisions are yours.
+ #
+ Requirement
+ Acceptance Condition
+FR-0
+1
+Intent Routing
+Incoming query is correctly classified and routed to the appropriate specialist node.
+Mis-routing to the wrong node counts as a failure.
+
+CAPSTONE PROJECT 03  |  PROBLEM STATEMENT
+Life Insurance AI Copilot
+Page 6  |  Enterprise AI Training Program  |  Day 19 & 20  |  Confidential – For Participant Use Only
+ #
+ Requirement
+ Acceptance Condition
+FR-0
+2
+Policy Type Guidance
+User asks about life insurance products → system compares term, whole life,
+endowment, and ULIP with citations from the product guide.
+FR-0
+3
+Underwriting Risk Intake
+System collects applicant age, health disclosures, lifestyle factors, and desired sum
+assured across multiple turns using shared state.
+FR-0
+4
+Risk Score Lookup
+Given disclosed conditions, system looks up the risk classification table and returns
+the applicant's risk tier with explanation.
+FR-0
+5
+Indicative Premium
+Estimate
+System queries the premium rate table and returns an indicative premium range
+clearly labelled as non-binding.
+FR-0
+6
+Human-in-the-Loop
+Trigger
+When risk tier is 'high' or 'substandard', the graph MUST pause and route to the
+human review node before continuing. Auto-approving high-risk cases fails this
+requirement.
+FR-0
+7
+Beneficiary Nomination
+Q&A;
+System answers nomination rules, share allocation, and minor nominee
+requirements with citations.
+FR-0
+8
+Issuance Status Guidance
+System answers pending document queries and issuance timeline questions from
+the issuance checklist.
+FR-0
+9
+Shared State Persistence
+Applicant data collected in one node (e.g., age in Underwriting) must be available
+in subsequent nodes without the user re-entering it.
+FR-1
+0
+Guardrails
+System must block: final underwriting decisions, guaranteed premium
+commitments, medical diagnosis, PHI leakage, and prompt injection.
+5.1 Non-Functional Requirements
+  Performance: API must respond within 4 seconds at the 95th percentile.
+ 
+  Graph Observability: Every graph execution must produce a LangSmith trace showing node-by-node execution,
+ conditional edge taken, and state delta at each node.
+  State Durability: Shared state must persist via LangGraph checkpointer — session data must survive API restarts
+ within a demo window.
+  Security: All credentials stored as environment variables. No hardcoded secrets.
+ 
+  Portability: Full application must run via a single Docker command.
+ 
+6. Evaluation Criteria & Scoring Rubric
+Total: 100 points + bonus. Automated scoring via LangSmith + DeepEval, combined with live demo assessment.
+ Dimension
+ Weight
+ What Will Be Assessed
+ Minimum Threshold
+RAG Accuracy
+ 20 pts
+Faithfulness and Answer Relevancy on 30-question test
+set across all node types.
+Faithfulness ≥ 0.85
+Relevancy ≥ 0.80
+Graph Correctness
+ 25 pts
+Intent routing accuracy (correct node selected per query
+type). State persistence verified (data from node A
+available in node B). HitL trigger verified for high-risk
+cases.
+Routing ≥ 90% accurate
+HitL must fire
+System
+Completeness
+ 20 pts
+All 10 FRs demonstrated live. Each = 2 pts.
+8 of 10 FRs must pass
+
+CAPSTONE PROJECT 03  |  PROBLEM STATEMENT
+Life Insurance AI Copilot
+Page 7  |  Enterprise AI Training Program  |  Day 19 & 20  |  Confidential – For Participant Use Only
+ Dimension
+ Weight
+ What Will Be Assessed
+ Minimum Threshold
+Guardrail
+Effectiveness
+ 15 pts
+3 adversarial inputs: final underwriting decision request,
+guaranteed premium request, prompt injection. Each
+blocked = 5 pts.
+All 3 blocked
+Deployment &
+Observability
+ 10 pts
+Live URL on AWS. LangSmith traces show multi-node
+execution with state deltas visible. Docker confirmed.
+Public URL live Traces
+visible
+Presentation
+ 10 pts
+Graph architecture diagram explained. State transitions
+demonstrated. Design decisions defended.
+Must match
+implementation
+6.1 Test Dataset Requirements (30 Q&A; Pairs)
+Policy Type Q&A; (RAG)
+8 questions
+Product comparison, rider questions, suitability scenarios
+Underwriting & Risk
+8 questions
+Different health conditions, risk tier edge cases
+Premium Estimation
+5 questions
+Various age, sum assured, and term combinations
+Beneficiary & Nomination
+5 questions
+Minor nominees, share splits, trustee scenarios
+Issuance & Lapse/Revival
+4 questions
+Pending documents, revival conditions, grace period
+■ Evaluation Tools + Graph-Specific Requirement
+In addition to DeepEval (RAG metrics) and LangSmith (run tracing), your evaluation must specifically demonstrate:
+(1) a LangSmith trace showing at least 3 different nodes being executed across a multi-turn session, (2) state delta
+visible between nodes (applicant_data growing as turns progress), and (3) the HitL interrupt firing for a high-risk test
+case.
+6.2 Creativity & Innovation Bonus (+15 pts)
+Teams are encouraged to go beyond the base requirements. Bonus points are awarded for genuine extensions that
+demonstrate creative use of GenAI and agentic patterns:
+  +5 pts — Lapse Prediction Node: Add a graph node that uses the applicant's payment history pattern to predict
+ lapse risk and proactively suggest revival options.
+  +5 pts — Policy Comparison Agent: Add a sub-graph that takes two policy types and generates a structured
+ pros/cons comparison grounded in retrieved documents.
+  +5 pts — Voice/Multimodal Input: Accept a voice query or a scanned document image as input, transcribe/OCR
+ it, and route through the same graph workflow.
+7. Deliverables & Demo Checklist
+Items marked CRITICAL are required for a passing grade.
+ CRITICAL
+LangGraph workflow executes: intent router correctly branches to at least 3 different specialist nodes
+during demo
+ CRITICAL
+Shared state demonstrated: data captured in one node is visible and used in a subsequent node without
+re-entry
+ CRITICAL
+Human-in-the-Loop fires: a high-risk applicant input causes the graph to pause at the human review
+node
+
+CAPSTONE PROJECT 03  |  PROBLEM STATEMENT
+Life Insurance AI Copilot
+Page 8  |  Enterprise AI Training Program  |  Day 19 & 20  |  Confidential – For Participant Use Only
+ CRITICAL
+Policy Q&A; returns citations: document name, section, and page number present in response
+ CRITICAL
+Application live on public AWS URL during the demo window
+ REQUIRED
+Indicative premium estimate returned from CSV lookup with correct deductible/risk tier applied
+ REQUIRED
+LangSmith traces show multi-node execution with node names, state deltas, and conditional edges
+ REQUIRED
+DeepEval scorecard: Faithfulness and Answer Relevancy on 30-question test set
+ REQUIRED
+Guardrails block final underwriting decision request and guaranteed premium request
+ REQUIRED
+Docker confirmed: build and run demonstrated or evidenced
+ REQUIRED
+Graph architecture diagram (Figure 2 equivalent) presented and matches implementation
+ BONUS
+Lapse prediction node, policy comparison sub-graph, or multimodal input (+5 pts each)
+8. Suggested Timeline (Day 19 & 20)
+All phases must be complete before the demo window on Day 20. LangGraph graph design (Phase 2) is the most
+critical phase — do not skip or rush it.
+ Phase
+ Focus Area
+ Time
+ Box
+ Exit Condition
+Phase 1
+Data ingestion — PDF loading, CSV parsing, FAISS
+indexing, metadata by document type
+1.5 hrs
+FAISS index built; CSV tables
+queryable as structured lookups
+Phase 2
+LangGraph design — define nodes, edges, shared
+state schema, conditional routing logic, HitL interrupt
+2.5 hrs
+Graph compiles and executes a
+3-node path for a sample query
+Phase 3
+API development — FastAPI wraps LangGraph
+executor; /chat, /health, /state endpoints
+1.0 hrs
+FastAPI running on localhost, graph
+invoked via /chat
+Phase 4
+UI development — Streamlit chat with state display
+panel, node path indicator
+1.0 hrs
+UI connected to API; user sees which
+node handled their query
+Phase 5
+Guardrails + adversarial testing — block final
+decisions, guaranteed quotes, injections
+0.5 hrs
+All 3 guardrail categories blocked
+Phase 6
+Evaluation — 30-question test set, DeepEval run,
+LangSmith multi-node trace review
+1.0 hrs
+Scorecard produced, Faithfulness ≥
+0.85, multi-node trace visible
+Phase 7
+Docker build, AWS deploy, URL confirmed, demo
+rehearsal
+1.0 hrs
+Live URL accessible, demo rehearsed
+once
+■ Final Reminder
+This is a problem statement, not a solution guide. Your team must design the graph, define the state schema,
+implement the nodes, and wire the conditional edges independently. The LangGraph workflow is the heart of this
+capstone — get it right before building the UI.
+Good luck, Group 03. Build a graph that branches intelligently, remembers everything, and knows when a human
+must be in the loop.

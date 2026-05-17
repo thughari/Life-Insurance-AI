@@ -14,6 +14,12 @@ from app.tools.rag import retrieve_policy_context
 
 # ── LLM provider selector ──────────────────────────────────────────────
 
+from langchain_core.globals import set_llm_cache
+from langchain_core.caches import InMemoryCache
+
+set_llm_cache(InMemoryCache())
+print("✅ In-Memory LLM Cache Enabled")
+
 def get_llm():
     groq_key = os.getenv("GROQ_API_KEY")
     gemini_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
@@ -45,7 +51,7 @@ def get_llm():
 # ── Structured output schemas ───────────────────────────────────────────
 
 class IntentClassification(BaseModel):
-    intent: Literal["underwriting", "policy_qa", "beneficiary", "issuance", "lapse_revival"] = Field(
+    intent: Literal["underwriting", "policy_qa", "beneficiary", "issuance", "lapse_revival", "policy_comparison", "lapse_prediction"] = Field(
         description="Classify the user query into one of the allowed intents."
     )
 
@@ -70,7 +76,7 @@ def format_history(history: list) -> str:
 # List fields with Annotated[..., operator.add] reducers (node_path,
 # conversation_history) are APPENDED to, so we return only the NEW items.
 
-def intent_router(state: CopilotState) -> Dict:
+async def intent_router(state: CopilotState) -> Dict:
     llm = get_llm()
     prompt = ChatPromptTemplate.from_messages([
         ("system",
@@ -81,6 +87,8 @@ def intent_router(state: CopilotState) -> Dict:
          "- beneficiary: asking about nominations, nominees, shares.\n"
          "- issuance: asking about pending documents, application status, issuance timelines.\n"
          "- lapse_revival: asking about missed premiums, grace periods, reinstatement, revival.\n"
+         "- policy_comparison: explicitly asking to compare policy types (e.g., term vs whole life).\n"
+         "- lapse_prediction: asking to predict lapse risk based on payment history.\n"
          "Default to policy_qa if unsure.\n\nConversation History:\n{history}"),
         ("user", "{query}")
     ])
@@ -90,7 +98,7 @@ def intent_router(state: CopilotState) -> Dict:
 
     try:
         structured_llm = llm.with_structured_output(IntentClassification)
-        result = structured_llm.invoke(prompt.format_prompt(
+        result = await structured_llm.ainvoke(prompt.format_prompt(
             history=format_history(history), query=query
         ))
         intent = result.intent
@@ -106,13 +114,17 @@ def intent_router(state: CopilotState) -> Dict:
             intent = "issuance"
         elif any(k in q for k in ["lapse", "revival", "reinstat", "grace period", "missed premium"]):
             intent = "lapse_revival"
+        elif "compare" in q or "vs" in q or "difference" in q:
+            intent = "policy_comparison"
+        elif "predict" in q or "history" in q:
+            intent = "lapse_prediction"
         else:
             intent = "policy_qa"
 
     return {"intent": intent, "node_path": ["intent_router"]}
 
 
-def underwriting_agent(state: CopilotState) -> Dict:
+async def underwriting_agent(state: CopilotState) -> Dict:
     llm = get_llm()
     query = state.get("user_query", "")
 
@@ -124,7 +136,7 @@ def underwriting_agent(state: CopilotState) -> Dict:
 
     try:
         structured_llm = llm.with_structured_output(ApplicantDataExtract)
-        extracted = structured_llm.invoke(prompt.format_prompt(query=query))
+        extracted = await structured_llm.ainvoke(prompt.format_prompt(query=query))
 
         # Merge with existing state
         data = dict(state.get("applicant_data", {}))
@@ -164,11 +176,11 @@ def underwriting_agent(state: CopilotState) -> Dict:
          "User query: {query}")
     ])
 
-    resp_msg = llm.invoke(response_prompt.format_prompt(
+    resp_msg = await llm.ainvoke(response_prompt.format_prompt(
         age=age, cover=cover, term=term, disclosures=disclosures,
         risk_tier=risk_tier, estimate_amt=estimate["monthly_estimate"],
         query=query
-    ))
+    ), config={"tags": ["final_response"]})
 
     return {
         "applicant_data": data,
@@ -180,7 +192,7 @@ def underwriting_agent(state: CopilotState) -> Dict:
     }
 
 
-def policy_qa_agent(state: CopilotState) -> Dict:
+async def policy_qa_agent(state: CopilotState) -> Dict:
     llm = get_llm()
     query = state.get("user_query", "")
     history = state.get("conversation_history", [])
@@ -202,9 +214,9 @@ def policy_qa_agent(state: CopilotState) -> Dict:
         ("user", "{query}")
     ])
 
-    resp = llm.invoke(prompt.format_prompt(
+    resp = await llm.ainvoke(prompt.format_prompt(
         context=ctx, history=format_history(history), query=query
-    ))
+    ), config={"tags": ["final_response"]})
 
     return {
         "response": resp.content,
@@ -212,7 +224,7 @@ def policy_qa_agent(state: CopilotState) -> Dict:
     }
 
 
-def beneficiary_agent(state: CopilotState) -> Dict:
+async def beneficiary_agent(state: CopilotState) -> Dict:
     llm = get_llm()
     query = state.get("user_query", "")
     ctx = retrieve_policy_context("Beneficiary nomination " + query)
@@ -225,7 +237,7 @@ def beneficiary_agent(state: CopilotState) -> Dict:
         ("user", "{query}")
     ])
 
-    resp = llm.invoke(prompt.format_prompt(context=ctx, query=query))
+    resp = await llm.ainvoke(prompt.format_prompt(context=ctx, query=query), config={"tags": ["final_response"]})
 
     return {
         "response": resp.content,
@@ -233,7 +245,7 @@ def beneficiary_agent(state: CopilotState) -> Dict:
     }
 
 
-def issuance_agent(state: CopilotState) -> Dict:
+async def issuance_agent(state: CopilotState) -> Dict:
     llm = get_llm()
     query = state.get("user_query", "")
     ctx = retrieve_policy_context("Policy issuance status documents " + query)
@@ -245,7 +257,7 @@ def issuance_agent(state: CopilotState) -> Dict:
         ("user", "{query}")
     ])
 
-    resp = llm.invoke(prompt.format_prompt(context=ctx, query=query))
+    resp = await llm.ainvoke(prompt.format_prompt(context=ctx, query=query), config={"tags": ["final_response"]})
 
     return {
         "response": resp.content,
@@ -253,7 +265,7 @@ def issuance_agent(state: CopilotState) -> Dict:
     }
 
 
-def lapse_revival_agent(state: CopilotState) -> Dict:
+async def lapse_revival_agent(state: CopilotState) -> Dict:
     """Dedicated agent for lapse, revival, and reinstatement queries."""
     llm = get_llm()
     query = state.get("user_query", "")
@@ -268,11 +280,54 @@ def lapse_revival_agent(state: CopilotState) -> Dict:
         ("user", "{query}")
     ])
 
-    resp = llm.invoke(prompt.format_prompt(context=ctx, query=query))
+    resp = await llm.ainvoke(prompt.format_prompt(context=ctx, query=query), config={"tags": ["final_response"]})
 
     return {
         "response": resp.content,
         "node_path": ["lapse_revival_agent"],
+    }
+
+
+async def policy_comparison_agent(state: CopilotState) -> Dict:
+    llm = get_llm()
+    query = state.get("user_query", "")
+    ctx = retrieve_policy_context("Compare life insurance policy types pros and cons " + query)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a Policy Comparison specialist. The user wants to compare different policy types. "
+         "Using the provided context, generate a structured Markdown table comparing the requested policies "
+         "highlighting their pros and cons. Always include citations (Document name and Page number) below the table.\n\nContext:\n{context}"),
+        ("user", "{query}")
+    ])
+
+    resp = await llm.ainvoke(prompt.format_prompt(context=ctx, query=query), config={"tags": ["final_response"]})
+    return {
+        "response": resp.content,
+        "node_path": ["policy_comparison_agent"],
+    }
+
+
+async def lapse_prediction_agent(state: CopilotState) -> Dict:
+    llm = get_llm()
+    query = state.get("user_query", "")
+    ctx = retrieve_policy_context("Lapse revival reinstatement " + query)
+    
+    # Mocking payment history check
+    mock_payment_history = "User has missed 2 consecutive premium payments in the last 6 months."
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a Lapse Prediction specialist. Evaluate the lapse risk based on the user's payment history. "
+         "Proactively suggest revival options if the risk is high. Use the provided policy context for accurate rules. "
+         "Always include citations.\n\nContext:\n{context}\n\nPayment History:\n{payment_history}"),
+        ("user", "{query}")
+    ])
+
+    resp = await llm.ainvoke(prompt.format_prompt(context=ctx, payment_history=mock_payment_history, query=query), config={"tags": ["final_response"]})
+    return {
+        "response": resp.content,
+        "node_path": ["lapse_prediction_agent"],
     }
 
 
@@ -341,6 +396,27 @@ async def stream_agent_response(state: CopilotState, agent_name: str) -> AsyncIt
         ])
         messages = prompt.format_prompt(context=ctx, query=query).to_messages()
 
+    elif agent_name == "policy_comparison_agent":
+        ctx = retrieve_policy_context("Compare life insurance policy types pros and cons " + query)
+        prompt = ChatPromptTemplate.from_messages([
+            ("system",
+             "You are a Policy Comparison specialist. Generate a structured Markdown table comparing the requested policies "
+             "highlighting their pros and cons. Include citations.\n\nContext:\n{context}"),
+            ("user", "{query}")
+        ])
+        messages = prompt.format_prompt(context=ctx, query=query).to_messages()
+
+    elif agent_name == "lapse_prediction_agent":
+        ctx = retrieve_policy_context("Lapse revival reinstatement " + query)
+        mock_payment_history = "User has missed 2 consecutive premium payments in the last 6 months."
+        prompt = ChatPromptTemplate.from_messages([
+            ("system",
+             "You are a Lapse Prediction specialist. Evaluate lapse risk based on payment history and suggest revival options. "
+             "Include citations.\n\nContext:\n{context}\n\nPayment History:\n{payment_history}"),
+            ("user", "{query}")
+        ])
+        messages = prompt.format_prompt(context=ctx, payment_history=mock_payment_history, query=query).to_messages()
+
     elif agent_name == "underwriting_agent":
         # Underwriting has structured extraction first, so we stream only the final response
         data = dict(state.get("applicant_data", {}))
@@ -397,6 +473,8 @@ def build_graph():
     graph.add_node("beneficiary_agent", beneficiary_agent)
     graph.add_node("issuance_agent", issuance_agent)
     graph.add_node("lapse_revival_agent", lapse_revival_agent)
+    graph.add_node("policy_comparison_agent", policy_comparison_agent)
+    graph.add_node("lapse_prediction_agent", lapse_prediction_agent)
     graph.add_node("human_review", human_review)
 
     graph.add_edge(START, "intent_router")
@@ -409,6 +487,8 @@ def build_graph():
             "beneficiary": "beneficiary_agent",
             "issuance": "issuance_agent",
             "lapse_revival": "lapse_revival_agent",
+            "policy_comparison": "policy_comparison_agent",
+            "lapse_prediction": "lapse_prediction_agent",
         },
     )
     graph.add_conditional_edges(
@@ -420,7 +500,21 @@ def build_graph():
     graph.add_edge("beneficiary_agent", END)
     graph.add_edge("issuance_agent", END)
     graph.add_edge("lapse_revival_agent", END)
+    graph.add_edge("policy_comparison_agent", END)
+    graph.add_edge("lapse_prediction_agent", END)
     graph.add_edge("human_review", END)
 
-    memory = MemorySaver()
+    import os
+    mongodb_uri = os.getenv("MONGODB_URI")
+    
+    if mongodb_uri:
+        import pymongo
+        from langgraph.checkpoint.mongodb import MongoDBSaver
+        client = pymongo.MongoClient(mongodb_uri)
+        memory = MongoDBSaver(client)
+    else:
+        from langgraph.checkpoint.memory import MemorySaver
+        memory = MemorySaver()
+        print("WARNING: MONGODB_URI not set. Falling back to in-memory checkpointer. HitL and persistence will be lost on restart.")
+    
     return graph.compile(checkpointer=memory, interrupt_before=["human_review"])

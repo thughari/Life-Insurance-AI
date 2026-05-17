@@ -4,28 +4,37 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 
+# ── Module-level cache ──────────────────────────────────────────────────
+_embeddings_cache = None
+_vectorstore_cache = None
+
 # Determine which embeddings to use
 def get_embeddings():
+    global _embeddings_cache
+    if _embeddings_cache is not None:
+        return _embeddings_cache
+
     groq_key = os.getenv("GROQ_API_KEY")
     gemini_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     openai_key = os.getenv("OPENAI_API_KEY")
 
     if groq_key:
         from langchain_huggingface import HuggingFaceEmbeddings
-        return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        _embeddings_cache = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     elif gemini_key:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
-        return GoogleGenerativeAIEmbeddings(
+        _embeddings_cache = GoogleGenerativeAIEmbeddings(
             model="models/gemini-embedding-001",
             google_api_key=gemini_key,
         )
     elif openai_key:
         from langchain_openai import OpenAIEmbeddings
-        return OpenAIEmbeddings()
+        _embeddings_cache = OpenAIEmbeddings()
     else:
         raise ValueError(
             "No embedding API key found. Set GROQ_API_KEY, GOOGLE_API_KEY, or OPENAI_API_KEY in your .env file."
         )
+    return _embeddings_cache
 
 FAISS_INDEX_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "faiss_index")
 PROVIDER_MARKER = os.path.join(FAISS_INDEX_PATH, ".provider")
@@ -81,11 +90,15 @@ def build_faiss_index(force: bool = False):
     print(f"FAISS index built successfully with {len(splits)} chunks ({provider} embeddings).")
 
 def retrieve_policy_context(query: str, k: int = 3) -> str:
+    global _vectorstore_cache
     build_faiss_index()
-    embeddings = get_embeddings()
-    vectorstore = FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
     
-    docs = vectorstore.similarity_search(query, k=k)
+    if _vectorstore_cache is None:
+        embeddings = get_embeddings()
+        _vectorstore_cache = FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
+        print("FAISS vectorstore loaded and cached.")
+    
+    docs = _vectorstore_cache.similarity_search(query, k=k)
     
     context_parts = []
     for i, doc in enumerate(docs):
@@ -95,3 +108,4 @@ def retrieve_policy_context(query: str, k: int = 3) -> str:
         context_parts.append(f"[Source: {source}, Page: {page}]\n{content}")
         
     return "\n\n".join(context_parts)
+

@@ -12,8 +12,10 @@ pypdf
 pandas
 streamlit
 httpx
-deepeval
 langchain-text-splitters
 langchain-groq
 langchain-huggingface
 sentence-transformers
+google-genai
+langgraph-checkpoint-mongodb
+pymongo
