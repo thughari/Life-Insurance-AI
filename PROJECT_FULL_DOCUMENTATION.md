@@ -50,7 +50,7 @@ This file explains:
 
 ---
 
-## 3) Function-by-function explanation
+## 3) Code-level documentation (every class/function)
 
 ## `app/main.py`
 - `health()`  
